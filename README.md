@@ -1,6 +1,6 @@
 # Ansible_Tasks
 
-The two codes are for 2 specific scenarios:
+The two codes installing httpd and deploying HTML files are for 2 specific scenarios:
 
 - Deploying the html file which already exist in the control node into the host node(s)
 - Deploying the html file into the host node(s) directly from the Git repository, using the URL of the repo.
