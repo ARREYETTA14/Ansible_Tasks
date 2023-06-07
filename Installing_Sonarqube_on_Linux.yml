@@ -1,0 +1,257 @@
+---
+- name: Installing Sonarqube on Linux Ec2 AMI
+  hosts: webservers
+  become: true
+  vars:
+    apt_key_url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    required_java: java-1.11.0-openjdk
+    set_default_java: jre-1.11.0-openjdk
+    sonarqube_software_url: https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-8.3.0.34182.zip
+    unit_file_content: 
+      "cat <<EOT> /etc/systemd/system/sonarqube.service
+      [Unit]
+      Description=SonarQube service
+      After=syslog.target network.target
+
+      [Service]
+      Type=forking
+
+      ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+      ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+
+      User=sonar
+      Group=sonar
+      Restart=always
+
+      LimitNOFILE=65536
+      LimitNPROC=4096
+
+      [Install]
+      WantedBy=multi-user.target
+      EOT"
+
+    nginx_source_available_content:
+        cat <<EOT> /etc/nginx/sites-available/sonarqube
+        server{
+              listen      80;
+              server_name sonarqube.groophy.in;
+
+              access_log  /var/log/nginx/sonar.access.log;
+              error_log   /var/log/nginx/sonar.error.log;
+
+              proxy_buffers 16 64k;
+              proxy_buffer_size 128k;
+
+              location / {
+                  proxy_pass  http://127.0.0.1:9000;
+                  proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                  proxy_redirect off;
+                        
+                  proxy_set_header    Host            \$host;
+                  proxy_set_header    X-Real-IP       \$remote_addr;
+                  proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  proxy_set_header    X-Forwarded-Proto http;
+              }
+        }
+        EOT
+
+    
+  tasks:
+
+
+  - name: Backup copy of the /etc/sysctl.conf file and save in /root/sysctl.conf_backup in root directory
+    ansible.builtin.copy:
+      src: /etc/sysctl.conf
+      dest: /root/sysctl.conf_backup
+
+  - name: Overwrite the original /etc/sysctl.conf file
+    shell: |
+      cat <<EOT> /etc/sysctl.conf
+      vm.max_map_count=262144
+      fs.file-max=65536
+      ulimit -n 65536
+      ulimit -u 4096
+      EOT
+
+  - name: Backup copy of the /etc/security/limits.conf file and save in /root/sec_limit.conf_backup in root directory
+    ansible.builtin.copy:
+      src: /etc/security/limits.conf
+      dest: /root/sec_limit.conf_backup
+
+  - name: Overwrite the original /etc/security/limits.conf file
+    shell: |
+      cat <<EOT> /etc/security/limits.conf
+      sonarqube  -  nofile  65536
+      sonarqube  -  nproc   409
+      EOT
+
+  - name: yum update (updates all packages in the instance)
+    ansible.builtin.yum:
+      name: "*"
+      state: latest  
+
+  - name: Install Java 11
+    ansible.builtin.yum:
+      name: "{{required_java}}"
+      state: present
+
+  - name: Setting Java version 11 as default
+    ansible.builtin.alternatives:
+      name: java
+      link: /usr/bin/java
+      path: /usr/lib/jvm/{{set_default_java}}/bin/java
+
+  - name: update all packages (install all packages in the instance)
+    ansible.builtin.apt:
+      name: "*"
+      state: latest 
+
+  - name: Download postgreSQL apt key from official website
+    ansible.builtin.apt_key:
+      url: "{{apt_key_url}}"
+      state: present 
+
+  - name: Add postgresql repo to a certain target
+    shell: |
+      echo "deb http://apt.postgresql.org/pub/repos/apt/ 'lsb_release -cs'-pgdg main" >> /etc/apt/sources.list.d/pgdg.list 
+
+  - name: Install postgreSQL apt key from official website
+    ansible.builtin.apt:
+      name: postgresql postgresql-contrib 
+
+  - name: Start PostgreSQL
+    ansible.builtin.systemd:
+      name: postgresql
+      state: started
+
+  - name: Start PostgreSQL automatically at boot time
+    ansible.builtin.systemd:
+      name: PostgreSQL
+      enabled: true 
+
+  - name: Set new password for PostgreSQL
+    shell: echo "postgres:admin123" | chpasswd
+
+  - name: Create database user called sonar
+    shell: runuser -l postgres -c "createuser sonar"
+
+  - name: Encrypt sonar password
+    shell: -i -u postgres psql -c "ALTER USER sonar with ENCRYPTED PASSWORD 'admin123';"
+
+  - name: Create database owner called sonar
+    shell: -i -u postgres psql -c "CREATE DATABASE sonarqube OWNER sonar;"
+
+  - name: Give all privilege to sonarqube database to sonar
+    shell: -i -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE sonarqube to sonar;"
+
+  - name: Restarting the postgresql database
+    ansible.builtin.systemd:
+      name: postgresql
+      daemon_reload: true
+      state: restarted 
+
+  - name: Get a list of network connections and listening sockets, filters them and get only the lines that contain the word "postgress"
+    shell: netstat -tulpena | grep postgres
+
+  - name: Download sonarqube software 
+    ansible.builtin.get_url:
+      url: "{{sonarqube_software_url}}"
+      dest: "sonarqube-8.3.0.34182.zip"
+
+  - name: Install zip
+    ansible.builtin.apt:
+      name: zip
+
+  - name: Extract the zip file
+    shell: unzip -o sonarqube-8.3.0.34182.zip -d /opt/
+
+  - name: moving a unzip file to /opt/sonarqube
+    shell: mv /opt/sonarqube-8.3.0.34182/ /opt/sonarqube
+
+  - name: add a group known as sonar
+    shell: groupadd sonar
+
+  - name: creates a new user account named "sonar" with  description "SonarQube - User", home dir "/opt/sonarqube/" member of grouo "sonar"
+    shell: useradd -c "SonarQube - User" -d /opt/sonarqube/ -g sonar sonar
+
+  - name: Change ownership of sonar 
+    shell: sudo chown sonar:sonar /app/sonarqube/ -R
+
+  - name: Copy sonar.properties file from sonarqube to sonar.properties_backup in root for backup
+    shell: /opt/sonarqube/conf/sonar.properties /root/sonar.properties_backup
+
+  - name: Overwrite the original /opt/sonarqube/conf/sonar.properties
+    shell: |
+      cat <<EOT> /opt/sonarqube/conf/sonar.properties
+      sonar.jdbc.username=sonar
+      sonar.jdbc.password=admin123
+      sonar.jdbc.url=jdbc:postgresql://localhost/sonarqube
+      sonar.web.host=0.0.0.0
+      sonar.web.port=9000
+      sonar.web.javaAdditionalOpts=-server
+      sonar.search.javaOpts=-Xmx512m -Xms512m -XX:+HeapDumpOnOutOfMemoryError
+      sonar.log.level=INFO
+      sonar.path.logs=logs
+      EOT
+
+  - name: Create a unit file /etc/systemd/system/sonarqube.service and paste a content in the file 
+    shell: |
+      echo "{{unit_file_content}}" > {{/etc/systemd/system/sonarqube.service}}
+      vi {{/etc/systemd/system/sonarqube.service}} <<-EOF
+      :set paste
+      :insert!
+      'P'
+      :wq!
+      EOF   
+
+  - name: Daemon-reload to pick up config change
+    ansible.builtin.systemd:
+      daemon_reload: true
+
+  - name: Start Sonarqube automatically at boot time
+    ansible.builtin.systemd:
+      name: sonarqube.service
+      enabled: true 
+
+  - name: Install nginx 
+    ansible.builtin.apt:
+      name: nginx
+      state: present
+
+  - name: Removing some default files from the sites-enabled and sites-available directory
+    shell: rm -rf /etc/nginx/sites-enabled/default && rm -rf /etc/nginx/sites-available/default
+
+  - name: Create a file /etc/nginx/sites-available/sonarqube and paste a content in the file for nginx
+    shell: |
+      echo "{{nginx_source_available_content}}" > {{/etc/nginx/sites-available/sonarqube}}
+      vi {{/etc/nginx/sites-available/sonarqube}} <<-EOF
+      :set paste
+      :insert!
+      'P'
+      :wq!
+      EOF   
+  ## Making Sonarqube websites/applications to be enabled hence nginx serves the Sonarqube application based on the settings defined in the conf file
+  - name: Create a symbolic link of sites-available/sonarqube conf file  in sites-enabled/sonarqube 
+    ansible.builtin.file:
+      src: /etc/nginx/sites-available/sonarqube 
+      dest: /etc/nginx/sites-enabled/sonarqube
+      state: link
+
+  - name: Start nginex automatically at boot time
+    ansible.builtin.systemd:
+      name: nginx.service
+      enabled: true 
+
+  - name: Ports to allow traffic through
+    shell: ufw allow 80,9000,9001/tcp
+
+  - name: Print/displays reboot message to be visible by user
+    shell: echo "System reboot in 30 sec"
+
+  - name: Delay execetion for 30s
+    shell: sleep 30
+
+  - name: Restarting the system
+    shell: reboot
+
+  

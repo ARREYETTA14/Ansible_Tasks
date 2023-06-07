@@ -1,0 +1,100 @@
+---
+- name: Installing Nexus on Linux Ec2 AMI
+  hosts: webservers
+  become: true
+  vars:
+    nexus_url: https://download.sonatype.com/nexus/3/latest-unix.tar.gz
+    required_java: java-1.8.0-openjdk
+    set_default_java: jre-1.8.0-openjdk
+    unit_file_content: 
+      "[Unit]
+        Description=nexus service
+        After=network.target
+
+        [Service]
+        Type=forking
+        LimitNOFILE=65536
+        User=nexus
+        Group=nexus
+        ExecStart=/app/nexus/bin/nexus start
+        ExecStop=/app/nexus/bin/nexus stop
+        User=nexus
+        Restart=on-abort
+
+        [Install]
+        WantedBy=multi-user.target"
+
+    
+  tasks:
+
+  - name: yum update (install all packages in the instance)
+    ansible.builtin.yum:
+      name: "*"
+      state: latest  
+
+  - name: Install Java
+    ansible.builtin.yum:
+      name: "{{required_java}}"
+      state: present
+
+  - name: Setting Java version 8 as default
+    ansible.builtin.alternatives:
+      name: java
+      link: /usr/bin/java
+      path: /usr/lib/jvm/{{set_default_java}}/bin/java
+
+  - name: update directory
+    shell: mkdir -p /opt/nexus
+
+  - name: update directory
+    shell: mkdir -p /tmp/nexus && cd /tmp/nexus
+
+  - name: Download Nexus tar.gz file from official website
+    ansible.builtin.get_url:
+      url: "{{nexus_url}}"
+      dest: /tmp/nexus/nexus.tar.gz
+
+  - name: Extract the tar file
+    shell: tar -xvf nexus.tar.gz
+
+  - name: Move all Nexus 3 files to a new Nexus (hence renaming the file)
+    shell: mv nexus-3* nexus
+
+  - name: Remove the tar.gz from /tmp/nexus/
+    shell: rm -rf /tmp/nexus/nexus.tar.gz
+
+  - name: Copy files from /tmp/nexus/ to /opt/nexus/
+    shell: rsync -avzh /tmp/nexus/ /opt/nexus/
+
+  - name: Create nexus user to run nexus
+    shell: useradd nexus
+
+  - name: Change ownership of nexus files and nexus data directory to nexus user
+    shell: sudo chown -R nexus:nexus /app/nexus && sudo chown -R nexus:nexus /app/sonatype-work
+
+  - name: Create a unit file and paste a content in the file
+    shell: |
+      echo "{{unit_file_content}}" > {{/etc/systemd/system/nexus.service}}
+      vi {{/etc/systemd/system/nexus.service}} <<-EOF
+      :set paste
+      :insert!
+      'P'
+      :wq!
+      EOF 
+
+  - name: Creates a nexus.rc file in /opt/nexus/bin/nexus.rc and add the line 'run_as_user="nexus"'
+    shell: echo 'run_as_user="nexus"' > /opt/nexus/bin/nexus.rc
+
+  - name: Daemon-reload to pick up config change
+    ansible.builtin.systemd:
+      daemon_reload: true
+  
+  - name: Start Nexus
+    ansible.builtin.systemd:
+      name: nexus
+      state: started
+
+  - name: Start Nexus automatically at boot time
+    ansible.builtin.systemd:
+      name: nexus
+      enabled: true       

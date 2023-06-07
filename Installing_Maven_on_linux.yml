@@ -1,0 +1,49 @@
+---
+- name: Installing Maven on Linux Ec2 AMI
+  hosts: webservers
+  become: true
+  vars:
+    maven_repo_url: https://repos.fedorapeople.org/repos/dchen/apache-maven/epel-apache-maven.repo
+    required_java: java-1.8.0-openjdk
+    set_default_java: jre-1.8.0-openjdk
+    
+  tasks:
+
+  - name: yum update (install all packages in the instance)
+    ansible.builtin.yum:
+      name: "*"
+      state: latest  
+
+  - name: Download/add a repo with the Maven package
+    ansible.builtin.get_url:
+      url: "{{maven_repo_url}}"
+      dest: /etc/yum.repos.d/epel-apache-maven.repo
+
+  - name: update directory
+    shell: sed -i s/\$releasever/6/g /etc/yum.repos.d/epel-apache-maven.repo 
+
+  - name: Install apache-maven
+    ansible.builtin.yum:
+      name: apache-maven
+      state: present
+
+  - name: Install Java
+    ansible.builtin.yum:
+      name: "{{required_java}}"
+      state: present
+
+  - name: Setting Java version 8 as default
+    ansible.builtin.alternatives: 
+      name: java
+      link: /usr/bin/java
+      path: /usr/lib/jvm/{{set_default_java}}/bin/java 
+  
+  - name: Start apache-maven
+    ansible.builtin.systemd:
+      name: apache-maven
+      state: started
+
+  - name: Start apache-maven automatically at boot time
+    ansible.builtin.systemd:
+      name: apache-maven
+      enabled: true       
