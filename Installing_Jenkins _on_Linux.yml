@@ -1,0 +1,50 @@
+---
+- name: Installing Jenkins
+  hosts: webservers
+  become: true
+  vars:
+    jenkins_repo_url: https://pkg.jenkins.io/redhat-stable/jenkins.repo 
+    jenkins_key_url: https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+    required_java: java-1.8.0-openjdk
+    set_default_java: jre-1.8.0-openjdk
+  tasks:
+
+  - name: yum update (install all packages in the instance)
+    ansible.builtin.yum:
+      name: "*"
+      state: latest  
+
+  - name: Add Jenkins Repo
+    ansible.builtin.get_url:
+      url: jenkins_repo_url
+      dest: /etc/yum.repos.d/jenkins.repo
+
+  - name: Import jenkins key from url
+    ansible.builtin.rpm_key:
+      state: present
+      key: jenkins_key_url
+
+  - name: Install Java
+    ansible.builtin.yum:
+      name: "{{required_java}}"
+      state: present
+
+  - name: Setting Java 8 as default
+    ansible.builtin.alternatives:
+      name: java
+      link: /usr/bin/java
+      path: /usr/lib/jvm/{{set_default_java}}/bin/java 
+
+  - name: Install Jenkins
+    ansible.builtin.yum:
+      name: jenkins
+      state: latest     
+
+  - name: Daemon-reload to pick up config change
+    ansible.builtin.systemd:
+      daemon_reload: true
+
+  - name: Start Jenkins
+    ansible.builtin.systemd:
+      name: jenkins
+      enabled: true       
